@@ -7,18 +7,36 @@
         <div class="app-input">
           <!-- 输入 — 按钮 -->
           <div class="app-start-button">
-            <div class="global-button"><strong>START</strong></div>
+            <template v-if="!isStart">
+              <div :class="{ 'global-button': true, disabled: isLoading }" @click="handleStart"><strong>START</strong>
+              </div>
+            </template>
+            <template v-else>
+              <div class="global-button" @click="handleStop"><strong>STOP</strong></div>
+            </template>
           </div>
           <!-- 输入 — 文字 -->
           <div class="app-input-text">
             <span>Input Text</span>
-            <input type="text" placeholder="请输入想说的话">
-            <div class="global-button"><strong>发送</strong></div>
+            <input type="text" placeholder="请输入想说的话" v-model="inputText">
+            <div :class="{ 'global-button': true, disabled: !videoSrcObject }" @click="handleSend"><strong>发送</strong>
+            </div>
           </div>
         </div>
         <!-- 输出区域 -->
         <div class="app-output">
-          <div class="app-no-result">暂无数据</div>
+          <template v-if="isLoading">
+            <div class="app-loading">处理中...</div>
+          </template>
+          <template v-if="!isLoading && !videoSrcObject">
+            <div class="app-no-result">暂无数据</div>
+          </template>
+          <template v-if="!isLoading && videoSrcObject">
+            <audio autoplay :srcObject="audioSrcObject"></audio>
+            <video class="app-video" autoplay :srcObject="videoSrcObject" @loadedmetadata="handleVideoLoaded"
+              @error="handleVideoError">
+            </video>
+          </template>
         </div>
       </div>
     </section>
@@ -28,8 +46,137 @@
 
 <script setup>
 import { ref } from 'vue';
+import { fetchOffer } from '@/apis';
 
-const msg = ref('hello world');
+const isStart = ref(false);
+const inputText = ref('');
+const pc = ref(null);
+const audioSrcObject = ref(null);
+const videoSrcObject = ref(null);
+const sessionId = ref('');
+const isLoading = ref(false);
+
+/**
+ * 等待ICE gathering完成
+ */
+function waitICEGatheringComplete() {
+  return new Promise((resolve) => {
+    if (pc.value.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+    const checkStatus = () => {
+      if (pc.value.iceGatheringState === 'complete') {
+        pc.value.removeEventListener('icegatheringstatechange', checkStatus);
+        resolve();
+      }
+    };
+    pc.value.addEventListener('icegatheringstatechange', checkStatus);
+  });
+}
+
+function handleError(errMessage) {
+  isLoading.value = false;
+  isStart.value = false;
+  alert(errMessage);
+  // 清理资源
+  if (pc.value) {
+    pc.value.close();
+    pc.value = null;
+  }
+}
+
+/**
+ * Start 按钮事件
+ */
+async function handleStart() {
+  if (isLoading.value) {
+    return;
+  }
+  const config = { sdpSemantics: 'unified-plan' };
+  if (!window.RTCPeerConnection) {
+    alert('当前浏览器不支持 RTCPeerConnection');
+    return;
+  }
+  pc.value = new RTCPeerConnection(config);
+  pc.value.addEventListener('track', (e) => {
+    const { track: { kind, readyState, enabled } } = e;
+    console.log('kind', kind);
+    console.log('e.streams[0]', e.streams[0]);
+    console.log('检查轨道状态', readyState);
+    console.log('检查流是否激活', e.streams[0].active);
+    console.log('检查轨道是否启用', enabled);
+    switch (kind) {
+      case 'audio':
+        audioSrcObject.value = e.streams[0];
+        break;
+      case 'video':
+        videoSrcObject.value = e.streams[0];
+        break;
+      default:
+    }
+  });
+  pc.value.addEventListener('connectionstatechange', () => {
+    console.log('连接状态:', pc.value.connectionState);
+    if (pc.value.connectionState === 'failed') {
+      handleError('连接失败，请检查网络或服务器状态');
+    }
+  });
+  pc.value.addEventListener('iceconnectionstatechange', () => {
+    console.log('ICE连接状态:', pc.value.iceConnectionState);
+    if (pc.value.iceConnectionState === 'failed') {
+      handleError('ICE协商失败，请检查网络配置');
+    }
+  });
+  pc.value.addTransceiver('video', { direction: 'recvonly' });
+  pc.value.addTransceiver('audio', { direction: 'recvonly' });
+  try {
+    isLoading.value = true;
+    const offer = await pc.value.createOffer();
+    await pc.value.setLocalDescription(offer);
+    // wait for ICE gathering to complete
+    await waitICEGatheringComplete();
+    const { sdp, type } = pc.value.localDescription;
+    const answer = await fetchOffer({ sdp, type });
+    console.log('answer', answer);
+    sessionId.value = answer.sessionId;
+    pc.value.setRemoteDescription(answer);
+    isStart.value = true;
+  } catch (err) {
+    console.error(err);
+    handleError(err.message);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+/**
+ * Stop 按钮事件
+ */
+function handleStop() {
+  isStart.value = false;
+  console.log('stop');
+}
+
+/**
+ * 发送方法
+ */
+function handleSend() {
+  if (!inputText.value) {
+    alert('不能发送空内容');
+    return;
+  }
+  console.log(inputText.value);
+}
+
+function handleVideoLoaded() {
+  console.log('视频元数据已加载，可以播放');
+}
+
+function handleVideoError(error) {
+  alert('视频播放失败，请检查控制台');
+  console.log('视频播放错误：', error);
+}
 </script>
 
 <style lang="less" scoped>
@@ -100,11 +247,19 @@ const msg = ref('hello world');
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
 }
 
+.app-loading,
 .app-no-result {
   font-size: 20px;
   font-weight: bold;
   color: gray;
+}
+
+.app-video {
+  height: 100%;
+  width: 300px;
+  background-color: black;
 }
 </style>
