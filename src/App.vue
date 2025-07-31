@@ -93,11 +93,15 @@ async function handleStart() {
   if (isLoading.value) {
     return;
   }
-  const config = { sdpSemantics: 'unified-plan' };
   if (!window.RTCPeerConnection) {
     alert('当前浏览器不支持 RTCPeerConnection');
     return;
   }
+  const config = {
+    sdpSemantics: 'unified-plan',
+    iceServers: [{ urls: ['stun:62.234.188.122:3478'] }],
+    iceTransportPolicy: 'all',
+  };
   pc.value = new RTCPeerConnection(config);
   pc.value.addEventListener('track', (e) => {
     const { track: { kind, readyState, enabled } } = e;
@@ -126,8 +130,23 @@ async function handleStart() {
     console.log('ICE连接状态:', pc.value.iceConnectionState);
     if (pc.value.iceConnectionState === 'failed') {
       handleError('ICE协商失败，请检查网络配置');
+      console.log('\n');
+      console.log('ICE失败，最后收集的候选: ');
+      pc.value.getStats().then((stats) => {
+        stats.forEach(report => {
+          if (report.type === 'candidate-pair' && report.state === 'failed') {
+            console.log('失败候选对:', report);
+          }
+        });
+      });
     }
   });
+  pc.value.onicecandidate = (e) => {
+    console.log('ICE候选:', e.candidate);
+    if (e.candidate) {
+      console.log('ICE候选:', e.candidate.candidate);
+    }
+  };
   pc.value.addTransceiver('video', { direction: 'recvonly' });
   pc.value.addTransceiver('audio', { direction: 'recvonly' });
   try {
